@@ -95,8 +95,12 @@ extract_cb (GtkWidget   *w,
 			char      *folder_name;
 			char      *msg;
 
-			folder_name = g_filename_display_name (extract_to_dir);
-			msg = g_strdup_printf (_("Destination folder \"%s\" does not exist.\n\nDo you want to create it?"), folder_name);
+		{
+			gchar *path = g_filename_from_uri (extract_to_dir, NULL, NULL);
+			folder_name = g_filename_display_name (path ? path : extract_to_dir);
+			g_free (path);
+		}
+		msg = g_strdup_printf (_("Destination folder \"%s\" does not exist.\n\nDo you want to create it?"), folder_name);
 			g_free (folder_name);
 
 			d = _gtk_message_dialog_new (GTK_WINDOW (data->dialog),

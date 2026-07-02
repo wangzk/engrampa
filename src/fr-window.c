@@ -6743,7 +6743,12 @@ fr_window_archive_extract (FrWindow    *window,
 			char      *folder_name;
 			char      *msg;
 
-			folder_name = g_filename_display_name (edata->extract_to_dir);
+			{
+				/* edata->extract_to_dir is a URI; decode for display */
+				gchar *path = g_filename_from_uri (edata->extract_to_dir, NULL, NULL);
+				folder_name = g_filename_display_name (path ? path : edata->extract_to_dir);
+				g_free (path);
+			}
 			msg = g_strdup_printf (_("Destination folder \"%s\" does not exist.\n\nDo you want to create it?"), folder_name);
 			g_free (folder_name);
 

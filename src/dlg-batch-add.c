@@ -216,7 +216,11 @@ add_clicked_cb (GtkWidget  *widget,
 		char      *folder_name;
 		char      *msg;
 
-		folder_name = g_filename_display_name (archive_dir);
+		{
+			gchar *path = g_filename_from_uri (archive_dir, NULL, NULL);
+			folder_name = g_filename_display_name (path ? path : archive_dir);
+			g_free (path);
+		}
 		msg = g_strdup_printf (_("Destination folder \"%s\" does not exist.\n\nDo you want to create it?"), folder_name);
 		g_free (folder_name);
 
