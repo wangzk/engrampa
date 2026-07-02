@@ -184,7 +184,7 @@ fr_channel_data_set_fd (FrChannelData *channel,
 		g_io_channel_set_encoding (channel->source, charset, NULL);
 }
 
-const char *try_charsets[] = { "UTF-8", "ISO-8859-1", "WINDOW-1252" };
+const char *try_charsets[] = { "UTF-8", "ISO-8859-1", "WINDOW-1252", "GB18030" };
 int n_charsets = G_N_ELEMENTS (try_charsets);
 
 struct _FrProcessPrivate {
