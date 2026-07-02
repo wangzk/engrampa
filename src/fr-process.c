@@ -107,6 +107,7 @@ fr_channel_data_init (FrChannelData *channel)
 	channel->raw = NULL;
 	channel->status = G_IO_STATUS_NORMAL;
 	channel->error = NULL;
+	channel->raw_mode = FALSE;
 }
 
 static void
@@ -136,9 +137,17 @@ fr_channel_data_read (FrChannelData *channel)
 							  &channel->error)) == G_IO_STATUS_NORMAL)
 	{
 		line[terminator_pos] = 0;
-		channel->raw = g_list_prepend (channel->raw, line);
-		if (channel->line_func != NULL)
-			(*channel->line_func) (line, channel->line_data);
+
+		if (channel->raw_mode) {
+			/* raw mode: buffer raw lines, don't process yet.
+			 * charset detection + conversion happens after
+			 * the process completes. */
+			channel->raw = g_list_prepend (channel->raw, line);
+		} else {
+			channel->raw = g_list_prepend (channel->raw, line);
+			if (channel->line_func != NULL)
+				(*channel->line_func) (line, channel->line_data);
+		}
 	}
 
 	return channel->status;
@@ -148,9 +157,22 @@ static GIOStatus
 fr_channel_data_flush (FrChannelData *channel)
 {
 	GIOStatus status;
+	gint      retries = 0;
 
-	while (((status = fr_channel_data_read (channel)) != G_IO_STATUS_ERROR) && (status != G_IO_STATUS_EOF))
-		/* void */;
+	/* In raw mode the tight loop can spin on G_IO_STATUS_AGAIN
+	 * because no encoding errors break out.  Limit spinning to
+	 * ~1 s total (200 × 5 ms). */
+	while (((status = fr_channel_data_read (channel)) != G_IO_STATUS_ERROR)
+	       && (status != G_IO_STATUS_EOF))
+	{
+		if (status == G_IO_STATUS_AGAIN) {
+			if (++retries > 200)
+				break;
+			g_usleep (5000);
+		} else {
+			retries = 0;
+		}
+	}
 	fr_channel_data_close_source (channel);
 
 	return status;
@@ -176,19 +198,18 @@ fr_channel_data_free (FrChannelData *channel)
 static void
 fr_channel_data_set_fd (FrChannelData *channel,
 			int            fd,
-			const char    *charset)
+			gboolean       raw_mode)
 {
 	fr_channel_data_reset (channel);
 
 	channel->source = g_io_channel_unix_new (fd);
 	g_io_channel_set_flags (channel->source, G_IO_FLAG_NONBLOCK, NULL);
 	g_io_channel_set_buffer_size (channel->source, BUFFER_SIZE);
-	if (charset != NULL)
-		g_io_channel_set_encoding (channel->source, charset, NULL);
+	channel->raw_mode = raw_mode;
+	/* raw mode: store bytes as-is; otherwise default (UTF-8) encoding */
+	if (raw_mode)
+		g_io_channel_set_encoding (channel->source, NULL, NULL);
 }
-
-const char *try_charsets[] = { "UTF-8", "ISO-8859-1", "WINDOW-1252", "GB18030" };
-int n_charsets = G_N_ELEMENTS (try_charsets);
 
 struct _FrProcessPrivate {
 	GPtrArray   *comm;                /* FrCommandInfo elements. */
@@ -607,19 +628,6 @@ child_setup (gpointer user_data)
 	setpgid (0, 0);
 }
 
-static const char *
-fr_process_get_charset (FrProcess *process)
-{
-	const char *charset = NULL;
-
-	if (process->priv->current_charset >= 0)
-		charset = try_charsets[process->priv->current_charset];
-	else if (g_get_charset (&charset))
-		charset = NULL;
-
-	return charset;
-}
-
 static void
 start_current_command (FrProcess *process)
 {
@@ -745,8 +753,11 @@ start_current_command (FrProcess *process)
 	g_string_free (commandline, TRUE);
 	g_free (argv);
 
-	fr_channel_data_set_fd (&process->out, out_fd, fr_process_get_charset (process));
-	fr_channel_data_set_fd (&process->err, err_fd, fr_process_get_charset (process));
+	{
+		gboolean raw_mode = (process->priv->current_charset == -1);
+		fr_channel_data_set_fd (&process->out, out_fd, raw_mode);
+		fr_channel_data_set_fd (&process->err, err_fd, raw_mode);
+	}
 
 	process->priv->check_timeout = g_timeout_add (REFRESH_RATE,
 					              check_child,
@@ -797,6 +808,172 @@ fr_process_set_error (FrProcess       *process,
 		if (gerror != NULL)
 			process->error.gerror = g_error_copy (gerror);
 	}
+}
+
+static void
+fr_process_detect_and_convert (FrProcess *process)
+{
+#ifdef HAVE_UCHARDET
+	GList      *scan;
+	GString    *raw_buf;
+	const char *detected_charset = NULL;
+
+	if (! process->out.raw_mode && ! process->err.raw_mode)
+		return;
+
+	/*
+	 * Build a charset-detection buffer from FILENAMES only.
+	 *
+	 * For most archive listing tools (unzip -ZTs, tar tf, 7z l, …)
+	 * the filename is the LAST space-separated field on each output
+	 * line.  Header / summary lines (Archive: …, Zip file size: …,
+	 * 3 files …) produce short numeric or path-like last fields,
+	 * which we skip.  Multiple filenames are collected so that
+	 * uchardet sees enough CJK bytes to make a correct decision
+	 * (rather than being fooled by the ASCII header).
+	 */
+	raw_buf = g_string_new ("");
+	/* Extract last space-separated field from each raw line as the
+	 * filename candidate, skipping header/summary boilerplate. */
+	for (scan = process->out.raw; scan; scan = scan->next) {
+		const char *line = scan->data;
+		const char *last, *p;
+		if (line == NULL || line[0] == '\0')
+			continue;
+		last = NULL;
+		p = line;
+		while (*p) {
+			while (*p == ' ') p++;
+			if (*p == '\0') break;
+			last = p;
+			while (*p && *p != ' ') p++;
+		}
+		if (last != NULL && strlen (last) > 8) {
+			g_string_append (raw_buf, last);
+			g_string_append_c (raw_buf, '\n');
+		}
+	}
+	if (raw_buf->len == 0) {
+		for (scan = process->err.raw; scan; scan = scan->next) {
+			const char *line = scan->data;
+			const char *last, *p;
+			if (line == NULL || line[0] == '\0')
+				continue;
+			last = NULL;
+			p = line;
+			while (*p) {
+				while (*p == ' ') p++;
+				if (*p == '\0') break;
+				last = p;
+				while (*p && *p != ' ') p++;
+			}
+			if (last != NULL && strlen (last) > 8)
+				g_string_append (raw_buf, last);
+		}
+	}
+
+	if (raw_buf->len > 0) {
+		uchardet_t ud = uchardet_new ();
+		if (uchardet_handle_data (ud, raw_buf->str, raw_buf->len) == 0) {
+			uchardet_data_end (ud);
+			detected_charset = uchardet_get_charset (ud);
+			if (detected_charset != NULL && detected_charset[0] != '\0') {
+				debug (DEBUG_INFO, "uchardet detected charset: %s\n", detected_charset);
+			} else {
+				detected_charset = NULL;
+			}
+		}
+		uchardet_delete (ud);
+	}
+	g_string_free (raw_buf, TRUE);
+
+	/* Convert raw lines to UTF-8 and process */
+	if (process->out.raw_mode) {
+		process->out.raw_mode = FALSE;
+		if (detected_charset != NULL
+		    && g_ascii_strcasecmp (detected_charset, "UTF-8") != 0
+		    && g_ascii_strcasecmp (detected_charset, "ASCII") != 0)
+		{
+			GList *converted_list = NULL;
+			for (scan = process->out.raw; scan; scan = scan->next) {
+				char *utf8;
+				utf8 = g_convert (scan->data, -1,
+						   "UTF-8", detected_charset,
+						   NULL, NULL, NULL);
+				if (utf8 != NULL) {
+					converted_list = g_list_prepend (converted_list, utf8);
+				} else {
+					/* conversion failed; keep original raw line */
+					converted_list = g_list_prepend (converted_list, g_strdup (scan->data));
+				}
+			}
+			converted_list = g_list_reverse (converted_list);
+			g_list_free_full (process->out.raw, g_free);
+			process->out.raw = converted_list;
+		}
+		/* Iterate in tail-to-head order (raw list is LIFO from prepend) */
+		if (process->out.line_func != NULL) {
+			scan = g_list_last (process->out.raw);
+			while (scan != NULL) {
+				(*process->out.line_func) (scan->data, process->out.line_data);
+				scan = scan->prev;
+			}
+		}
+	}
+
+	if (process->err.raw_mode) {
+		process->err.raw_mode = FALSE;
+		if (detected_charset != NULL
+		    && g_ascii_strcasecmp (detected_charset, "UTF-8") != 0
+		    && g_ascii_strcasecmp (detected_charset, "ASCII") != 0)
+		{
+			GList *converted_list = NULL;
+			for (scan = process->err.raw; scan; scan = scan->next) {
+				char *utf8;
+				utf8 = g_convert (scan->data, -1,
+						   "UTF-8", detected_charset,
+						   NULL, NULL, NULL);
+				if (utf8 != NULL)
+					converted_list = g_list_prepend (converted_list, utf8);
+				else
+					converted_list = g_list_prepend (converted_list, g_strdup (scan->data));
+			}
+			converted_list = g_list_reverse (converted_list);
+			g_list_free_full (process->err.raw, g_free);
+			process->err.raw = converted_list;
+		}
+		/* Iterate in tail-to-head order (raw list is LIFO from prepend) */
+		if (process->err.line_func != NULL) {
+			scan = g_list_last (process->err.raw);
+			while (scan != NULL) {
+				(*process->err.line_func) (scan->data, process->err.line_data);
+				scan = scan->prev;
+			}
+		}
+	}
+#else
+	/* Without uchardet, iterate raw lines in tail-to-head (FIFO) order */
+	if (process->out.raw_mode) {
+		process->out.raw_mode = FALSE;
+		if (process->out.line_func != NULL) {
+			GList *scan = g_list_last (process->out.raw);
+			while (scan != NULL) {
+				(*process->out.line_func) (scan->data, process->out.line_data);
+				scan = scan->prev;
+			}
+		}
+	}
+	if (process->err.raw_mode) {
+		process->err.raw_mode = FALSE;
+		if (process->err.line_func != NULL) {
+			GList *scan = g_list_last (process->err.raw);
+			while (scan != NULL) {
+				(*process->err.line_func) (scan->data, process->err.line_data);
+				scan = scan->prev;
+			}
+		}
+	}
+#endif
 }
 
 static gint
@@ -871,21 +1048,15 @@ check_child (gpointer data)
 
 	/**/
 
-	if (channel_error
-	    && (process->error.type == FR_PROC_ERROR_IO_CHANNEL)
-	    && g_error_matches (process->error.gerror, G_CONVERT_ERROR, G_CONVERT_ERROR_ILLEGAL_SEQUENCE))
-	{
-		if (process->priv->current_charset < n_charsets - 1) {
-			/* try with another charset */
-			process->priv->current_charset++;
-			process->priv->running = FALSE;
-			process->restart = TRUE;
-			fr_process_start (process);
-			return FALSE;
-		}
-		/*fr_process_set_error (process, FR_PROC_ERROR_NONE, 0, NULL);*/
-		fr_process_set_error (process, FR_PROC_ERROR_BAD_CHARSET, 0, process->error.gerror);
-	}
+	/* uchardet: detect charset from raw bytes, convert lines to UTF-8,
+	 * then call the line callbacks. */
+	fr_process_detect_and_convert (process);
+
+	/* On raw-mode first run, we always succeed - no charset conversion
+	 * happens at the GIOChannel level. If detection/conversion fails,
+	 * the raw bytes are passed through as-is. */
+	if (process->priv->current_charset == -1)
+		process->priv->current_charset = 0;
 
 	/* Check whether to continue or stop the process */
 
