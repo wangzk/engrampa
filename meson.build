@@ -10,6 +10,7 @@ caja_version = '>=1.17.1'
 json_glib_version = '>=0.14.0'
 sm_version = '>=1.0.0'
 ice_version = '>=1.0.0'
+uchardet_version = '>=0.0.1'
 
 gnome = import('gnome')
 i18n = import('i18n')
@@ -46,6 +47,7 @@ libjson_glib_dep = dependency('json-glib-1.0', version : json_glib_version, requ
 use_json_glib = libjson_glib_dep.found()
 sm_dep = dependency('sm', version : sm_version)
 ice_dep = dependency('ice', version : ice_version)
+uchardet_dep = dependency('uchardet', version : uchardet_version)
 
 use_magic = false
 if get_option('magic')
@@ -99,6 +101,7 @@ endif
 if use_magic
   config_data.set('ENABLE_MAGIC', 1)
 endif
+config_data.set('HAVE_UCHARDET', 1)
 config_data.set_quoted('CPIO_PATH', cpio_path)
 config_file = configure_file(output : 'config.h', configuration : config_data)
 config_inc = include_directories('.')

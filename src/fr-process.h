@@ -50,6 +50,7 @@ typedef struct {
 	gpointer    line_data;
 	GIOStatus   status;
 	GError     *error;
+	gboolean    raw_mode;   /* TRUE: read raw bytes, defer line_func call until charset detected */
 } FrChannelData;
 
 struct _FrProcess {

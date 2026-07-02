@@ -84,7 +84,8 @@ executable('engrampa',
     gtk_dep,
     mate_submodules_dep,
     use_json_glib ? libjson_glib_dep : [],
-    use_magic ? libmagic_dep : []
+    use_magic ? libmagic_dep : [],
+    uchardet_dep
   ],
   include_directories : config_inc,
   c_args : c_args,
@@ -98,7 +99,8 @@ executable('test-server', 'test-server.c',
     glib_dep,
     gthread_dep,
     gtk_dep,
-    use_json_glib ? libjson_glib_dep : []
+    use_json_glib ? libjson_glib_dep : [],
+    uchardet_dep
   ],
   include_directories : config_inc,
   c_args : c_args,

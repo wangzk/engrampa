@@ -67,7 +67,8 @@ PKG_CHECK_MODULES(FR,					\
 	glib-2.0 >= $GLIB_REQUIRED			\
 	gthread-2.0					\
 	gio-unix-2.0 >= $GIO_REQUIRED			\
-	gtk+-3.0 >= $GTK_REQUIRED)
+	gtk+-3.0 >= $GTK_REQUIRED			\
+	uchardet)
 AC_SUBST(FR_CFLAGS)
 AC_SUBST(FR_LIBS)
 
@@ -173,6 +174,15 @@ fi
 
 AM_CONDITIONAL(ENABLE_MAGIC, test x"$enable_magic" != x"no")
 
+dnl ******************************
+
+PKG_CHECK_MODULES(UCHARDET, [uchardet])
+AC_SUBST(UCHARDET_CFLAGS)
+AC_SUBST(UCHARDET_LIBS)
+AC_DEFINE(HAVE_UCHARDET, 1, [Define to 1 if uchardet support is included])
+
+dnl ==========================================================================
+
 AC_ARG_VAR([CPIO], [Path to the `cpio` command])
 AC_PATH_PROGS(CPIO, gcpio cpio, cpio)
 AC_DEFINE_UNQUOTED(CPIO_PATH, "${CPIO}", [Path to cpio])
@@ -216,5 +226,6 @@ Configure summary:
 	Run in place               ${enable_run_in_place}
 	Use libmagic:              ${enable_magic}
 	JSON support:              ${enable_json_glib}
+	Charset detection:         yes (uchardet)
 	Native Language support:   ${USE_NLS}
 "
