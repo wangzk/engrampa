@@ -856,10 +856,13 @@ fr_process_detect_and_convert (FrProcess *process)
 			g_list_free_full (process->out.raw, g_free);
 			process->out.raw = converted_list;
 		}
-		/* Now call line_func for each line */
+		/* Iterate in tail-to-head order (raw list is LIFO from prepend) */
 		if (process->out.line_func != NULL) {
-			for (scan = process->out.raw; scan; scan = scan->next)
+			scan = g_list_last (process->out.raw);
+			while (scan != NULL) {
 				(*process->out.line_func) (scan->data, process->out.line_data);
+				scan = scan->prev;
+			}
 		}
 	}
 
@@ -884,27 +887,35 @@ fr_process_detect_and_convert (FrProcess *process)
 			g_list_free_full (process->err.raw, g_free);
 			process->err.raw = converted_list;
 		}
+		/* Iterate in tail-to-head order (raw list is LIFO from prepend) */
 		if (process->err.line_func != NULL) {
-			for (scan = process->err.raw; scan; scan = scan->next)
+			scan = g_list_last (process->err.raw);
+			while (scan != NULL) {
 				(*process->err.line_func) (scan->data, process->err.line_data);
+				scan = scan->prev;
+			}
 		}
 	}
 #else
-	/* Without uchardet, just call line_func for raw lines without conversion */
+	/* Without uchardet, iterate raw lines in tail-to-head (FIFO) order */
 	if (process->out.raw_mode) {
 		process->out.raw_mode = FALSE;
 		if (process->out.line_func != NULL) {
-			GList *scan;
-			for (scan = process->out.raw; scan; scan = scan->next)
+			GList *scan = g_list_last (process->out.raw);
+			while (scan != NULL) {
 				(*process->out.line_func) (scan->data, process->out.line_data);
+				scan = scan->prev;
+			}
 		}
 	}
 	if (process->err.raw_mode) {
 		process->err.raw_mode = FALSE;
 		if (process->err.line_func != NULL) {
-			GList *scan;
-			for (scan = process->err.raw; scan; scan = scan->next)
+			GList *scan = g_list_last (process->err.raw);
+			while (scan != NULL) {
 				(*process->err.line_func) (scan->data, process->err.line_data);
+				scan = scan->prev;
+			}
 		}
 	}
 #endif
