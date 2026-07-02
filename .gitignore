@@ -10,3 +10,12 @@ build-tools/linuxdeploy.AppImage
 # meson subproject wraps (download artifacts)
 subprojects/mate-submodules/
 subprojects/*.wrap
+
+# editor swap files
+.*.swp
+
+# AppImage extraction
+squashfs-root/
+
+# test data
+test-data/
