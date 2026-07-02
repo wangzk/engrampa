@@ -1,0 +1,12 @@
+# build
+builddir/
+
+# AppImage output
+*.AppImage
+
+# linuxdeploy binary tool
+build-tools/linuxdeploy.AppImage
+
+# meson subproject wraps (download artifacts)
+subprojects/mate-submodules/
+subprojects/*.wrap
